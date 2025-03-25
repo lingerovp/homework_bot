@@ -2,13 +2,17 @@ import logging
 import os
 import sys
 import time
+from contextlib import suppress
+from datetime import datetime
 from http import HTTPStatus
+from json import JSONDecodeError
 from logging.handlers import RotatingFileHandler
 
 import requests
 from dotenv import load_dotenv
 from requests.exceptions import RequestException
 from telebot import TeleBot
+from telebot.apihelper import ApiException
 
 import exceptions
 
@@ -25,12 +29,10 @@ logging.basicConfig(
     ]
 )
 
-
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-OPENING_12_SPRINT = 1741609232
 RETRY_PERIOD = 600
 
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
@@ -42,9 +44,14 @@ HOMEWORK_VERDICTS = {
 }
 
 
-def check_tokens() -> bool:
+def check_tokens() -> list:
     """Проверяет доступность обязательных переменных."""
-    return all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, PRACTICUM_TOKEN])
+    tokens = {
+        'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
+        'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
+        'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID
+    }
+    return [name_token for name_token, token in tokens.items() if not token]
 
 
 def send_message(bot: TeleBot, message: str):
@@ -52,8 +59,7 @@ def send_message(bot: TeleBot, message: str):
     try:
         logging.debug('Отравка сообщения')
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    except Exception as error:
-        print(error)
+    except ApiException as error:
         logging.error(error, exc_info=True)
     else:
         logging.debug('Сообщение успешно отправлено')
@@ -69,6 +75,7 @@ def get_api_answer(timestamp):
             error_message = response.json().get(
                 'message', 'Неизвестная ошибка'
             )
+            logging.error(error_message)
             raise exceptions.EndpointStatusError(
                 f'Ошибка ответа от API практикума.\n'
                 f'Статус ответа: {response.status_code}.\n'
@@ -77,6 +84,12 @@ def get_api_answer(timestamp):
         return response.json()
     except RequestException as error:
         logging.error(f'Произошла ошибка при запросе к API: {error}')
+        raise ConnectionError
+    except JSONDecodeError as error:
+        logging.error(
+            f'Произошла ошибка при преобразовании json к dict: {error}'
+        )
+        raise
 
 
 def check_response(response):
@@ -87,7 +100,7 @@ def check_response(response):
         raise TypeError(text_error)
 
     if response.get('homeworks') is None:
-        text_error = 'Отсутсвуют ожидаемые ключи в response'
+        text_error = 'Отсутсвуют ожидаемый ключ "homeworks" в response'
         logging.error(text_error)
         raise KeyError(text_error)
 
@@ -95,6 +108,12 @@ def check_response(response):
         text_error = 'Значенеи ключа "homeworks" не является списком'
         logging.error(text_error)
         raise TypeError(text_error)
+
+    if response.get('current_date') is None:
+        text_error = 'Отсутсвуют ожидаемый ключ "current_date" в response'
+        logging.error(text_error)
+        raise KeyError(text_error)
+
     return response['homeworks']
 
 
@@ -119,13 +138,16 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    if not check_tokens():
-        logging.critical('Отсутвуют обязательные переменные из окружения')
+    missing_tokens = check_tokens()
+    if missing_tokens:
+        logging.critical(
+            f'Отсутвуют обязательные переменные из окружени: '
+            f'{", ".join(missing_tokens)}'
+        )
         return
     bot = TeleBot(token=TELEGRAM_TOKEN)
-    timestamp = OPENING_12_SPRINT
-    last_status = ''
-
+    timestamp = int(datetime.now().timestamp())
+    last_message = ''
     while True:
         try:
             response = get_api_answer(timestamp)
@@ -134,14 +156,18 @@ def main():
             if not homeworks:
                 logging.debug('Изменений нет')
                 continue
-            if last_status != homeworks[0].get('status'):
-                message = parse_status(homeworks[0])
+            message = parse_status(homeworks[0])
+            if last_message != message:
+                last_message = message
                 send_message(bot, message)
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
-            send_message(bot, message)
+            if last_message != message:
+                last_message = message
+                with suppress(ApiException):
+                    send_message(bot, message)
         finally:
-            time.sleep(600)
+            time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
