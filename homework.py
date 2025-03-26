@@ -146,7 +146,7 @@ def main():
         )
         return
     bot = TeleBot(token=TELEGRAM_TOKEN)
-    timestamp = int(datetime.now().timestamp()) - 60000
+    timestamp = int(datetime.now().timestamp())
     last_message = ''
     while True:
         try:
