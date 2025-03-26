@@ -146,12 +146,12 @@ def main():
         )
         return
     bot = TeleBot(token=TELEGRAM_TOKEN)
-    timestamp = int(datetime.now().timestamp())
+    timestamp = int(datetime.now().timestamp()) - 60000
     last_message = ''
     while True:
         try:
             response = get_api_answer(timestamp)
-            timestamp = response.get('current_date')
+            timestamp = response.get('current_date', timestamp)
             homeworks = check_response(response)
             if not homeworks:
                 logging.debug('Изменений нет')
